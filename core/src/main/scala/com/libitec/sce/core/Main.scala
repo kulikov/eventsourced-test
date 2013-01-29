@@ -40,6 +40,7 @@ trait ActorSystemComponent {
 
 
 case class LoadSku(sku: String, list: Map[Int, String])
+case class AnySimpleMessage(text: String)
 
 
 trait DoerComponent {
@@ -56,7 +57,7 @@ trait DoerComponent {
   /**
    * Actor
    */
-  class Doer(doerId: Long) extends Actor {
+  class Doer(doerId: Long) extends Actor with EventsourcedSupport {
 
     var payload = Set.empty[String]
     var cnt = 0
@@ -71,14 +72,62 @@ trait DoerComponent {
           cnt += 1
           payload += s"$sku - $cnt"
           println(s"[Doer$doerId] event = $sku $cnt")
+          sender ! Success // TODO: should be autoreplied with AutoConfirmed trait
       }
     }
 
 
     def receive =  {
-      case LoadSku(sku, ls) ⇒
-        // some other business logic
-        doerStore ! Message(LoadSku(sku + ";", ls))
+      // save message without transaction
+      case AnySimpleMessage(text) ⇒
+        save(('MyCustomEvent, text)) // throw exception if can not write
+
+
+      // save with distributed transaction
+      case sync @ Sync(LoadSku(sku, ls)) ⇒
+        if (hasReservedSku(sku)) {
+
+          node.actor ! sync(UnloadSku(sku)) // include other members to this transaction
+
+          try {
+            save(LoadSku(sku, ls), sync)
+
+            // do some staff this
+            log.info("Sku successfull loaded!")
+          } catch {
+            case e: Exception ⇒ log.error(s"Error load sku on Doer($doerId). Reason: $e")
+          }
+        } else {
+          sync.fail("No reserved sku here!")
+        }
+    }
+  }
+
+
+  /**
+   * Helper functions
+   */
+  trait EventsourcedSupport {
+
+    protected def save(event: Any) {
+      Await.ready(doerStore ? Message(event)) match {
+        case Success(_) ⇒ // ok, skip
+        case error ⇒ throw new Exception(s"Write error! $error")
+      }
+    }
+
+    protected def save(event: Any, sync: Coordinator) {
+      Await.ready(doerStore ? Message(event)) match {
+        case Success(msg) ⇒
+          if (!sync.ok()) {
+            doerStore ! Delete(msg)
+            throw new Exception("Sync error!")
+          }
+
+        case other ⇒
+          sync.fail("Transaction failed — write error!")
+          throw new Exception(s"Write error! $error")
+      }
     }
 
   }

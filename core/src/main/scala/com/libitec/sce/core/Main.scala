@@ -11,7 +11,6 @@ import org.eligosource.eventsourced.journal._
 
 
 object Main extends App {
-
   println("Start...")
 
   new Production().init()
@@ -27,9 +26,9 @@ class Production
     val doer1 = createDoer(1)
     val doer2 = createDoer(2)
 
-    transaction { sync ⇒
-      doer1 ! sync(LoadSku("Sku for doer1"))
-      doer2 ! sync(LoadSku("Sku for doer2"))
+    for (n ← 1 to 10000) {
+      doer1 ! LoadSku("Sku for doer1 " + n, Map(3 → "-33", 6 → "-66"))
+      doer2 ! LoadSku("Sku for doer2 " + n, Map(12 → "-33", 211 → "-66"))
     }
   }
 }
@@ -40,10 +39,7 @@ trait ActorSystemComponent {
 }
 
 
-case class LoadSku(sku: String)
-
-
-
+case class LoadSku(sku: String, list: Map[Int, String])
 
 
 trait DoerComponent {
@@ -71,25 +67,18 @@ trait DoerComponent {
 
     class DoerStore extends Actor {
       def receive = {
-        case LoadSku(sku) ⇒
+        case LoadSku(sku, list) ⇒
           cnt += 1
-          payload += s"$sku; - $cnt"
-          println(s"[Doer] event = $sku ($payload)")
-
-        case Snapshot(bites: Array[Byte]) {
-          val p = serializer.fromBinary()
-          cnt = p.getCnt
-        }
+          payload += s"$sku - $cnt"
+          println(s"[Doer$doerId] event = $sku $cnt")
       }
     }
 
 
     def receive =  {
-      case LoadSku(sku) ⇒
-        doerStore ? Message(LoadSku(sku + ";") onSuccess {
-          case e ⇒
-            payload.
-        }
+      case LoadSku(sku, ls) ⇒
+        // some other business logic
+        doerStore ! Message(LoadSku(sku + ";", ls))
     }
 
   }

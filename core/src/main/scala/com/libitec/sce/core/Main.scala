@@ -120,7 +120,7 @@ trait DoerComponent {
       Await.ready(doerStore ? Message(event)) match {
         case Success(msg) ⇒
           if (!sync.ok()) {
-            doerStore ! Delete(msg)
+            doerStore ! Delete(msg) // rollback written message
             throw new Exception("Sync error!")
           }
 

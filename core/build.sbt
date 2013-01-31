@@ -11,5 +11,6 @@ resolvers += "Eligosource Releases" at "http://repo.eligotech.com/nexus/content/
 resolvers += "Eligosource Snapshots" at "http://repo.eligotech.com/nexus/content/repositories/eligosource-snapshots"
 
 libraryDependencies ++= Seq(
-    "org.eligosource" %% "eventsourced" % "0.5-SNAPSHOT"
+  "com.typesafe.akka" %% "akka-transactor" % "2.1.0",
+  "org.eligosource" %% "eventsourced" % "0.5-SNAPSHOT"
 )

@@ -4,7 +4,11 @@ import java.io.File
 
 import scala.concurrent.duration._
 
+import scala.concurrent.Await
+
 import akka.actor._
+import akka.pattern.ask
+import akka.util.Timeout
 
 import org.eligosource.eventsourced.core._
 import org.eligosource.eventsourced.journal._
@@ -26,9 +30,14 @@ class Production
     val doer1 = createDoer(1)
     val doer2 = createDoer(2)
 
-    for (n ← 1 to 10000) {
-      doer1 ! LoadSku("Sku for doer1 " + n, Map(3 → "-33", 6 → "-66"))
-      doer2 ! LoadSku("Sku for doer2 " + n, Map(12 → "-33", 211 → "-66"))
+    implicit val timeout = Timeout(1 second)
+
+    val sync = SimpleSync()
+    doer1 ! sync(LoadSku("Sku for doer1 ", Map(3 → "-33", 6 → "-66")))
+    doer2 ! sync(LoadSku("Sku for doer2 ", Map(12 → "-33", 211 → "-66")))
+
+    if (sync.ok()) {
+      println("\n | OK! \n |\n")
     }
   }
 }
@@ -41,6 +50,8 @@ trait ActorSystemComponent {
 
 case class LoadSku(sku: String, list: Map[Int, String])
 case class AnySimpleMessage(text: String)
+case class Success(msg: Any)
+case object Success
 
 
 trait DoerComponent {
@@ -57,22 +68,22 @@ trait DoerComponent {
   /**
    * Actor
    */
-  class Doer(doerId: Long) extends Actor with EventsourcedSupport {
+  class Doer(doerId: Long) extends Actor with ActorLogging with EventsourcedSupport {
 
     var payload = Set.empty[String]
     var cnt = 0
 
-    val doerStore = doerExtension.processorOf(Props(new DoerStore with Receiver with Eventsourced { val id = doerId.toInt } ))(context)
+    val actorStore = doerExtension.processorOf(Props(new DoerStore with Receiver with Eventsourced { val id = doerId.toInt } ))(context)
     doerExtension.recover(id ⇒ if (id == doerId) Some(0) else None, 1 minute)
 
 
-    class DoerStore extends Actor {
+    class DoerStore extends Actor { this: Receiver ⇒
       def receive = {
         case LoadSku(sku, list) ⇒
           cnt += 1
           payload += s"$sku - $cnt"
           println(s"[Doer$doerId] event = $sku $cnt")
-          sender ! Success // TODO: should be autoreplied with AutoConfirmed trait
+          sender ! Success(message) // TODO: should be autoreplied with AutoConfirmed trait
       }
     }
 
@@ -84,10 +95,10 @@ trait DoerComponent {
 
 
       // save with distributed transaction
-      case sync @ Sync(LoadSku(sku, ls)) ⇒
+      case sync @ SimpleSync(LoadSku(sku, ls)) ⇒
         if (hasReservedSku(sku)) {
 
-          node.actor ! sync(UnloadSku(sku)) // include other members to this transaction
+//          node.actor ! sync(UnloadSku(sku)) // include other members to this transaction
 
           try {
             save(LoadSku(sku, ls), sync)
@@ -101,6 +112,8 @@ trait DoerComponent {
           sync.fail("No reserved sku here!")
         }
     }
+
+    private def hasReservedSku(sku: String) = true
   }
 
 
@@ -109,22 +122,28 @@ trait DoerComponent {
    */
   trait EventsourcedSupport {
 
+    def actorStore: ActorRef
+
     protected def save(event: Any) {
-      Await.ready(doerStore ? Message(event)) match {
+      implicit val timeout = Timeout(5 seconds)
+
+      Await.result(actorStore ? Message(event), timeout.duration) match {
         case Success(_) ⇒ // ok, skip
         case error ⇒ throw new Exception(s"Write error! $error")
       }
     }
 
-    protected def save(event: Any, sync: Coordinator) {
-      Await.ready(doerStore ? Message(event)) match {
+    protected def save(event: Any, sync: SimpleSync) {
+      implicit val timeout = Timeout(5 seconds)
+
+      Await.result(actorStore ? Message(event), timeout.duration) match {
         case Success(msg) ⇒
           if (!sync.ok()) {
-            doerStore ! Delete(msg) // rollback written message
+            actorStore ! Delete(msg) // rollback written message
             throw new Exception("Sync error!")
           }
 
-        case other ⇒
+        case error ⇒
           sync.fail("Transaction failed — write error!")
           throw new Exception(s"Write error! $error")
       }
